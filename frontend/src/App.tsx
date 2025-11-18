@@ -21,7 +21,7 @@ interface Notification {
 }
 
 // API URL - change this to your backend URL
-const API_URL = 'http://localhost:3001/api/incidents';
+const API_URL = '/api/incidents';
 
 const api = {
   async getIncidents(): Promise<Incident[]> {
