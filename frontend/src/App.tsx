@@ -12,7 +12,7 @@ interface Incident {
   status: 'Open' | 'In Progress' | 'Closed';
   closedOn: string | null;
   totalTime: string | null;
-  createdAt: string; // Added createdAt
+  createdAt: string;
 }
 
 interface Notification {
@@ -20,43 +20,48 @@ interface Notification {
   type: 'success' | 'error';
 }
 
+// API URL - change this to your backend URL
+const API_URL = 'http://localhost:3001/api/incidents';
+
 const api = {
   async getIncidents(): Promise<Incident[]> {
-    const stored = localStorage.getItem('incidents');
-    return stored ? JSON.parse(stored) : [];
+    const response = await fetch(API_URL);
+    if (!response.ok) throw new Error('Failed to fetch incidents');
+    return response.json();
   },
 
-  async createIncident(data: Omit<Incident, 'id' | 'createdAt' | 'status'>): Promise<Incident> {
-    const incidents = await this.getIncidents();
-    const newIncident: Incident = {
-      id: Date.now(),
-      ...data,
-      createdAt: new Date().toISOString(),
-      status: 'Open',
-      closedOn: null,
-      totalTime: null,
-    };
-    incidents.push(newIncident);
-    localStorage.setItem('incidents', JSON.stringify(incidents));
-    return newIncident;
+  async createIncident(formData: FormData): Promise<Incident> {
+    const response = await fetch(API_URL, {
+      method: 'POST',
+      body: formData,
+    });
+    if (!response.ok) throw new Error('Failed to create incident');
+    return response.json();
   },
 
   async updateIncident(id: number, data: Partial<Incident>): Promise<Incident> {
-    const incidents = await this.getIncidents();
-    const index = incidents.findIndex((i) => i.id === id);
-    if (index !== -1) {
-      incidents[index] = { ...incidents[index], ...data };
-      localStorage.setItem('incidents', JSON.stringify(incidents));
-      return incidents[index];
-    }
-    throw new Error('Incident not found');
+    const response = await fetch(`${API_URL}/${id}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(data),
+    });
+    if (!response.ok) throw new Error('Failed to update incident');
+    return response.json();
   },
 
-  async deleteIncident(id: number): Promise<boolean> {
-    const incidents = await this.getIncidents();
-    const filtered = incidents.filter((i) => i.id !== id);
-    localStorage.setItem('incidents', JSON.stringify(filtered));
-    return true;
+  async deleteIncident(id: number): Promise<void> {
+    const response = await fetch(`${API_URL}/${id}`, {
+      method: 'DELETE',
+    });
+    if (!response.ok) throw new Error('Failed to delete incident');
+  },
+
+  async exportCSV(): Promise<Blob> {
+    const response = await fetch(`${API_URL}/export`);
+    if (!response.ok) throw new Error('Failed to export CSV');
+    return response.blob();
   },
 };
 
@@ -97,6 +102,7 @@ const IncidentReportingSystem: React.FC = () => {
       setIncidents(data);
     } catch (error) {
       showNotification('Failed to load incidents', 'error');
+      console.error('Load error:', error);
     } finally {
       setLoading(false);
     }
@@ -106,17 +112,17 @@ const IncidentReportingSystem: React.FC = () => {
     e.preventDefault();
     setLoading(true);
     try {
-      const incidentData: Omit<Incident, 'id' | 'createdAt' | 'status'> = {
-        reportedBy: formData.reportedBy,
-        assignedTo: formData.assignedTo,
-        dateTime: formData.dateTime,
-        description: formData.description,
-        attachment: formData.attachment ? formData.attachment.name : null,
-        closedOn: null,
-        totalTime: null,
-      };
+      const submitFormData = new FormData();
+      submitFormData.append('reportedBy', formData.reportedBy);
+      submitFormData.append('assignedTo', formData.assignedTo);
+      submitFormData.append('dateTime', new Date(formData.dateTime).toISOString());
+      submitFormData.append('description', formData.description);
+      
+      if (formData.attachment) {
+        submitFormData.append('attachment', formData.attachment);
+      }
 
-      await api.createIncident(incidentData);
+      await api.createIncident(submitFormData);
       showNotification('Incident reported successfully');
       setFormData({
         reportedBy: '',
@@ -129,6 +135,7 @@ const IncidentReportingSystem: React.FC = () => {
       loadIncidents();
     } catch (error) {
       showNotification('Failed to create incident', 'error');
+      console.error('Submit error:', error);
     } finally {
       setLoading(false);
     }
@@ -138,7 +145,7 @@ const IncidentReportingSystem: React.FC = () => {
     setEditingIncident(record);
     setEditData({
       status: record.status,
-      closedOn: record.closedOn || '',
+      closedOn: record.closedOn ? record.closedOn.slice(0, 16) : '',
     });
     setShowEditModal(true);
   };
@@ -151,17 +158,10 @@ const IncidentReportingSystem: React.FC = () => {
 
       const updateData: Partial<Incident> = {
         status: editData.status,
-        closedOn: editData.status === 'Closed' && editData.closedOn ? editData.closedOn : null,
+        closedOn: editData.status === 'Closed' && editData.closedOn 
+          ? new Date(editData.closedOn).toISOString() 
+          : null,
       };
-
-      if (updateData.closedOn && editingIncident.dateTime) {
-        const start = new Date(editingIncident.dateTime);
-        const end = new Date(updateData.closedOn);
-        const diffMs = end.getTime() - start.getTime();
-        const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
-        const diffDays = Math.floor(diffHours / 24);
-        updateData.totalTime = diffDays > 0 ? `${diffDays} days` : `${diffHours} hours`;
-      }
 
       await api.updateIncident(editingIncident.id, updateData);
       showNotification('Incident updated successfully');
@@ -169,6 +169,7 @@ const IncidentReportingSystem: React.FC = () => {
       loadIncidents();
     } catch (error) {
       showNotification('Failed to update incident', 'error');
+      console.error('Update error:', error);
     } finally {
       setLoading(false);
     }
@@ -183,38 +184,27 @@ const IncidentReportingSystem: React.FC = () => {
         loadIncidents();
       } catch (error) {
         showNotification('Failed to delete incident', 'error');
+        console.error('Delete error:', error);
       } finally {
         setLoading(false);
       }
     }
   };
 
-  const downloadCSV = () => {
-    const headers = ['ID', 'Reported By', 'Assigned To', 'Date & Time', 'Description', 'Status', 'Closed On', 'Total Time'];
-    const rows = incidents.map((inc) => [
-      inc.id,
-      inc.reportedBy,
-      inc.assignedTo,
-      new Date(inc.dateTime).toLocaleString(),
-      inc.description,
-      inc.status,
-      inc.closedOn ? new Date(inc.closedOn).toLocaleString() : '',
-      inc.totalTime || '',
-    ]);
-
-    const csvContent = [
-      headers.join(','),
-      ...rows.map((row) => row.map((cell) => `"${cell}"`).join(',')),
-    ].join('\n');
-
-    const blob = new Blob([csvContent], { type: 'text/csv' });
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `incidents_${new Date().toISOString().split('T')[0]}.csv`;
-    a.click();
-    window.URL.revokeObjectURL(url);
-    showNotification('CSV downloaded successfully');
+  const downloadCSV = async () => {
+    try {
+      const blob = await api.exportCSV();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `incidents_${new Date().toISOString().split('T')[0]}.csv`;
+      a.click();
+      window.URL.revokeObjectURL(url);
+      showNotification('CSV downloaded successfully');
+    } catch (error) {
+      showNotification('Failed to download CSV', 'error');
+      console.error('Download error:', error);
+    }
   };
 
   return (
@@ -225,7 +215,7 @@ const IncidentReportingSystem: React.FC = () => {
         <div
           className={`fixed top-4 right-4 px-6 py-4 rounded-lg shadow-lg z-50 ${
             notification.type === 'success' ? 'bg-green-500' : 'bg-red-500'
-          } text-white`}
+          } text-white animate-pulse`}
         >
           {notification.message}
         </div>
@@ -315,12 +305,14 @@ const IncidentReportingSystem: React.FC = () => {
                           <button
                             onClick={() => handleEdit(incident)}
                             className="text-blue-600 hover:text-blue-900"
+                            title="Edit incident"
                           >
                             <Edit className="w-5 h-5" />
                           </button>
                           <button
                             onClick={() => handleDelete(incident.id)}
                             className="text-red-600 hover:text-red-900"
+                            title="Delete incident"
                           >
                             <Trash className="w-5 h-5" />
                           </button>
@@ -409,6 +401,9 @@ const IncidentReportingSystem: React.FC = () => {
                     }}
                     className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                   />
+                  {formData.attachment && (
+                    <p className="mt-1 text-sm text-gray-500">Selected: {formData.attachment.name}</p>
+                  )}
                 </div>
               </div>
             </div>
